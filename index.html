@@ -148,6 +148,17 @@ body {
     transform: scale(0.9);
 }
 
+.send-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background-color: #9C6A43;
+}
+
+#user-input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 .fade-out {
     animation: fadeOut 0.3s ease-out forwards;
 }
@@ -201,152 +212,175 @@ body {
     </div>
     
     <script>
-        function safeBase64Decode(str) {
-
-  try {
-
-    const padded = str + '='.repeat((4 - str.length % 4) % 4);
-
-    return atob(padded);
-
-  } catch (e) {
-
-    console.error("❌ Сообщение:", str, e);
-
-    return '';
-
-  }
-
-}
-
-
-
-const embeddedData = {
-
-  Current_Messages: {
-
-    BIQ: [
-
-      { "payload": "3Xc6MkSVBP6O=" },
-
-      { "payload": "QUl6YVN5QmhkVQ==" },
-
-      { "payload": "AQMBOP0Y2" }
-
-    ]
-
-  },
-
-  Photo_idS: {
-
-    tokens: [
-
-      { "unit": "tcobKvnbRQ" },
-
-      { "unit": "a2V5X3Rlc3Q=" },
-
-      { "unit": "obKvnbRQ" }
-
-    ]
-
-  },
-
-  Channel_Work_: {
-
-    pipes: [
-
-      { "seq": "==xzLkK3" },
-
-      { "seq": "-1O2Q_c80tc" },
-
-      { "seq": "YUBmaW5hbA==" }
-
-    ]
-
-  },
-
-  Linear_design: {
-
-    capsules: [
-
-      { "blk": "Fz8uMDE=" },
-
-      { "blk": "aGFja21l" },
-
-      { "blk": "cXZrMWtqV2VGZw==" }
-
-    ]
-
-  }
-
-};
-
-
-
-let Messageviewer = "";
-
-
-function buildKey() {
-
-  try {
-
-    const send = safeBase64Decode(embeddedData.Current_Messages.BIQ[1].payload);
-
-    const message = embeddedData.Photo_idS.tokens[2].unit.split("").reverse().join("");
-
-    const answer = embeddedData.Channel_Work_.pipes[1].seq.split("").reverse().join("");
-
-    const enter = safeBase64Decode(embeddedData.Linear_design.capsules[2].blk);
-
-
-
-    Messageviewer = send + message + answer + enter;
-
-  } catch (err) {
-
-    console.error("❌ Ошибка показа сообщений:", err);
-
-  }
-
-};
-
-buildKey()
 
 const responseBubble = document.getElementById("response-bubble");
 const responseText   = document.getElementById("response-text");
 const userInput      = document.getElementById("user-input");
 const sendButton     = document.getElementById("send-button");
 
-async function askGemini(prompt) {
+// Переменные для управления запросами
+let isRequestInProgress = false;
+let lastRequestTime = 0;
+const MIN_REQUEST_INTERVAL = 1000; // Минимальный интервал между запросами (1 секунда)
+
+/**
+ * Функция для декодирования Base64 строки
+ * @param {string} encoded - Закодированная в Base64 строка
+ * @returns {string} - Декодированная строка
+ */
+function decodeBase64(encoded) {
     try {
-        const res = await fetch(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + Messageviewer,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    contents: [
-                        {
-                            role: "user",
-                            parts: [
-                                {
-                                    text:
-                                        "Отвечай всегда в роли Шокана Уалиханова — " +
-                                        "казахского ученого, путешественника и офицера XIX века. " +
-                                        "Пиши в стиле того времени: уважительно, сдержанно, " +
-                                        "наблюдательно, с мудрыми размышлениями, но без черезчур длинных ответов. " +
-                                        "Говори так, будто обращаешься к собеседнику лично. Можешь не здороваться, если собеседник не здоровается сам " +
-                                        "Вот сообщение пользователя: " +
-                                        prompt
-                                }
-                            ]
-                        }
-                    ]
-                })
+        return atob(encoded);
+    } catch (error) {
+        console.error("Ошибка декодирования Base64:", error);
+        return encoded; // Возвращаем исходную строку в случае ошибки
+    }
+}
+
+/**
+ * Функция для запроса к Gemini API
+ * 
+ * ОШИБКА 429 (Too Many Requests) возникает по следующим причинам:
+ * 
+ * 1. ПРЕВЫШЕНИЕ КВОТЫ (Quota Exceeded):
+ *    - Бесплатный план Gemini имеет ограничения:
+ *      • ~15 запросов в минуту (RPM)
+ *      • ~1500 запросов в день (RPD)
+ *      • ~1 миллион токенов в минуту (TPM)
+ *    - При превышении любого из этих лимитов API возвращает 429
+ * 
+ * 2. RATE LIMITING (Ограничение скорости):
+ *    - API блокирует слишком частые запросы от одного ключа
+ *    - Защита от злоупотреблений и перегрузки серверов
+ * 
+ * 3. ПРЕВЫШЕНИЕ МЕСЯЧНОГО ЛИМИТА:
+ *    - Бесплатный план имеет общий месячный лимит
+ *    - После исчерпания нужно ждать до следующего месяца или перейти на платный план
+ * 
+ * 4. МНОЖЕСТВЕННЫЕ ЗАПРОСЫ:
+ *    - Одновременные запросы от одного API ключа могут вызвать 429
+ *    - Решение: использовать очередь запросов и ограничение частоты
+ * 
+ * РЕШЕНИЕ:
+ * - Автоматический повтор с экспоненциальной задержкой
+ * - Ограничение частоты запросов (MIN_REQUEST_INTERVAL)
+ * - Защита от одновременных запросов (isRequestInProgress)
+ * - Проверка квоты в Google Cloud Console: https://console.cloud.google.com/apis/api/generativelanguage.googleapis.com/quotas
+ */
+async function askGemini(prompt, retryCount = 0, maxRetries = 3) {
+    // Предотвращаем одновременные запросы
+    if (isRequestInProgress) {
+        return "Пожалуйста, подождите. Обрабатывается предыдущий запрос...";
+    }
+
+    // Простая защита от слишком частых запросов
+    const timeSinceLastRequest = Date.now() - lastRequestTime;
+    if (timeSinceLastRequest < MIN_REQUEST_INTERVAL && lastRequestTime > 0) {
+        const waitTime = MIN_REQUEST_INTERVAL - timeSinceLastRequest;
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+
+    isRequestInProgress = true;
+    lastRequestTime = Date.now();
+
+    try {
+        // API ключ закодирован в Base64 для базовой защиты
+        const encodedApiKey = "QUl6YVN5QVFXUlNUdXRBZDNOd3V3YldjS2MtUEtfdTVjTUNTX19Z";
+        const apiKey = decodeBase64(encodedApiKey);
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+        
+        const res = await fetch(apiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                contents: [
+                    {
+                        role: "user",
+                        parts: [
+                            {
+                                text:
+                                    "Отвечай всегда в роли Шокана Уалиханова — " +
+                                    "казахского ученого, путешественника и офицера XIX века. " +
+                                    "Пиши в стиле того времени: уважительно, сдержанно, " +
+                                    "наблюдательно, с мудрыми размышлениями, но без черезчур длинных ответов. " +
+                                    "Говори так, будто обращаешься к собеседнику лично. Можешь не здороваться, если собеседник не здоровается сам " +
+                                    "Вот сообщение пользователя: " +
+                                    prompt
+                            }
+                        ]
+                    }
+                ]
+            })
+        });
+
+        // Проверяем статус ответа
+        if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            console.error("API Error:", res.status, errorData);
+            
+            if (res.status === 400) {
+                isRequestInProgress = false;
+                return "Ошибка запроса. Проверьте API ключ и параметры.";
+            } else if (res.status === 403) {
+                isRequestInProgress = false;
+                return "Доступ запрещен. API ключ недействителен или истек.";
+            } else if (res.status === 429) {
+                // Обработка ошибки 429 (Too Many Requests)
+                // ПРИЧИНЫ ОШИБКИ 429:
+                // 1. Превышена квота API (quota) - бесплатный план Gemini имеет ограничения:
+                //    - Лимит запросов в минуту (RPM - Requests Per Minute)
+                //    - Лимит запросов в день (RPD - Requests Per Day)
+                //    - Лимит токенов в минуту (TPM - Tokens Per Minute)
+                // 2. Слишком частые запросы (rate limiting) - API блокирует при превышении скорости
+                // 3. Превышен месячный лимит бесплатного плана
+                // 4. Множественные одновременные запросы от одного API ключа
+                
+                const retryAfter = extractRetryAfter(errorData);
+                const errorMessage = errorData?.error?.message || "";
+                
+                // Логируем детали ошибки для отладки
+                console.error("429 Error Details:", {
+                    message: errorMessage,
+                    retryAfter: retryAfter,
+                    errorData: errorData
+                });
+                
+                if (retryCount < maxRetries) {
+                    const waitTime = retryAfter || Math.min(1000 * Math.pow(2, retryCount), 30000);
+                    console.log(`Rate limit exceeded. Retrying in ${waitTime}ms (attempt ${retryCount + 1}/${maxRetries})`);
+                    
+                    // Показываем пользователю информацию о повторе с объяснением
+                    const waitSeconds = Math.ceil(waitTime / 1000);
+                    let userMessage = `Превышен лимит запросов API.\n`;
+                    userMessage += `Причина: ${errorMessage.includes('quota') ? 'Исчерпана квота запросов' : 'Слишком частые запросы'}\n`;
+                    userMessage += `Повтор через ${waitSeconds} сек...`;
+                    animateResponseText(userMessage);
+                    
+                    await new Promise(resolve => setTimeout(resolve, waitTime));
+                    isRequestInProgress = false;
+                    return askGemini(prompt, retryCount + 1, maxRetries);
+                } else {
+                    isRequestInProgress = false;
+                    const waitSeconds = Math.ceil((retryAfter || 30000) / 1000);
+                    let finalMessage = `Ошибка 429: Превышен лимит запросов.\n\n`;
+                    finalMessage += `Возможные причины:\n`;
+                    finalMessage += `• Исчерпана дневная квота бесплатного плана\n`;
+                    finalMessage += `• Превышен лимит запросов в минуту\n`;
+                    finalMessage += `• Превышен лимит токенов\n\n`;
+                    finalMessage += `Решение:\n`;
+                    finalMessage += `• Подождите ${waitSeconds} секунд\n`;
+                    finalMessage += `• Проверьте квоту в Google Cloud Console\n`;
+                    finalMessage += `• Рассмотрите переход на платный план`;
+                    return finalMessage;
+                }
+            } else {
+                isRequestInProgress = false;
+                return `Ошибка сервера (${res.status}). Попробуйте позже.`;
             }
-        );
+        }
 
         const data = await res.json();
+        isRequestInProgress = false;
 
         return (
             data?.candidates?.[0]?.content?.parts?.[0]?.text ||
@@ -354,9 +388,43 @@ async function askGemini(prompt) {
         );
 
     } catch (err) {
-        console.error(err);
-        return "ОШИБКААААА";
+        isRequestInProgress = false;
+        console.error("Fetch Error:", err);
+        
+        // Определяем тип ошибки
+        if (err.name === "TypeError" && err.message.includes("Failed to fetch")) {
+            return "Ошибка подключения. Возможные причины:\n" +
+                   "1. Проблемы с интернетом\n" +
+                   "2. CORS блокировка (откройте через локальный сервер)\n" +
+                   "3. Блокировка антивирусом/файрволом\n\n" +
+                   "Решение: Запустите локальный сервер:\n" +
+                   "python -m http.server 8000\n" +
+                   "или\n" +
+                   "npx http-server\n" +
+                   "Затем откройте http://localhost:8000";
+        } else if (err.name === "TypeError" && err.message.includes("network")) {
+            return "Ошибка сети. Проверьте подключение к интернету.";
+        } else {
+            return `Ошибка: ${err.message || "Неизвестная ошибка"}`;
+        }
     }
+}
+
+// Функция для извлечения времени повтора из ответа API
+function extractRetryAfter(errorData) {
+    // Пытаемся найти retry-after в разных местах ответа
+    if (errorData?.error?.message) {
+        const message = errorData.error.message;
+        // Ищем паттерн "Please retry in X.XXs"
+        const match = message.match(/retry in ([\d.]+)s/i);
+        if (match) {
+            const seconds = parseFloat(match[1]);
+            return Math.ceil(seconds * 1000); // Конвертируем в миллисекунды
+        }
+    }
+    
+    // Если не нашли, используем экспоненциальную задержку
+    return null;
 }
 
 function animateResponseText(newText) {
@@ -372,12 +440,26 @@ function animateResponseText(newText) {
 
 async function sendMessage() {
     const text = userInput.value.trim();
-    if (!text) return;
+    if (!text || isRequestInProgress) return;
 
     userInput.value = "";
+    userInput.disabled = true;
+    sendButton.disabled = true;
+    
+    // Показываем индикатор загрузки
+    animateResponseText("Думаю...");
 
-    const reply = await askGemini(text);
-    animateResponseText(reply);
+    try {
+        const reply = await askGemini(text);
+        animateResponseText(reply);
+    } catch (err) {
+        animateResponseText("Произошла ошибка. Проверьте консоль браузера (F12).");
+        console.error("Send message error:", err);
+    } finally {
+        userInput.disabled = false;
+        sendButton.disabled = false;
+        userInput.focus();
+    }
 }
 
 sendButton.addEventListener("click", sendMessage);
