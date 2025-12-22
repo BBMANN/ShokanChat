@@ -96,6 +96,13 @@ body {
     transform: scale(0.95) translateY(10px);
 }
 
+.glassmorphism {
+    background: var(--glass-bg);
+    border: var(--glass-border);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+}
+
 #response-text {
     font-size: 1.1em;
     font-weight: 500;
@@ -238,36 +245,10 @@ function decodeBase64(encoded) {
 }
 
 /**
- * Функция для запроса к Gemini API
- * 
- * ОШИБКА 429 (Too Many Requests) возникает по следующим причинам:
- * 
- * 1. ПРЕВЫШЕНИЕ КВОТЫ (Quota Exceeded):
- *    - Бесплатный план Gemini имеет ограничения:
- *      • ~15 запросов в минуту (RPM)
- *      • ~1500 запросов в день (RPD)
- *      • ~1 миллион токенов в минуту (TPM)
- *    - При превышении любого из этих лимитов API возвращает 429
- * 
- * 2. RATE LIMITING (Ограничение скорости):
- *    - API блокирует слишком частые запросы от одного ключа
- *    - Защита от злоупотреблений и перегрузки серверов
- * 
- * 3. ПРЕВЫШЕНИЕ МЕСЯЧНОГО ЛИМИТА:
- *    - Бесплатный план имеет общий месячный лимит
- *    - После исчерпания нужно ждать до следующего месяца или перейти на платный план
- * 
- * 4. МНОЖЕСТВЕННЫЕ ЗАПРОСЫ:
- *    - Одновременные запросы от одного API ключа могут вызвать 429
- *    - Решение: использовать очередь запросов и ограничение частоты
- * 
- * РЕШЕНИЕ:
- * - Автоматический повтор с экспоненциальной задержкой
- * - Ограничение частоты запросов (MIN_REQUEST_INTERVAL)
- * - Защита от одновременных запросов (isRequestInProgress)
- * - Проверка квоты в Google Cloud Console: https://console.cloud.google.com/apis/api/generativelanguage.googleapis.com/quotas
+ * Функция для запроса к AIMLAPI (OpenAI-совместимый эндпоинт)
+ * Сохраняем базовую защиту от частых запросов и повторов при 429.
  */
-async function askGemini(prompt, retryCount = 0, maxRetries = 3) {
+async function askAIML(prompt, retryCount = 0, maxRetries = 3) {
     // Предотвращаем одновременные запросы
     if (isRequestInProgress) {
         return "Пожалуйста, подождите. Обрабатывается предыдущий запрос...";
@@ -285,30 +266,29 @@ async function askGemini(prompt, retryCount = 0, maxRetries = 3) {
 
     try {
         // API ключ закодирован в Base64 для базовой защиты
-        const encodedApiKey = "QUl6YVN5QVFXUlNUdXRBZDNOd3V3YldjS2MtUEtfdTVjTUNTX19Z";
+        const encodedApiKey = "NTY4YzBmODY3N2JlNDA2ZDhkNTFjMTZjNzM2Zjg3YzA=";
         const apiKey = decodeBase64(encodedApiKey);
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+        const apiUrl = "https://api.aimlapi.com/v1/chat/completions";
         
         const res = await fetch(apiUrl, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${apiKey}`
+            },
             body: JSON.stringify({
-                contents: [
+                model: "gpt-4o",
+                messages: [
                     {
-                        role: "user",
-                        parts: [
-                            {
-                                text:
-                                    "Отвечай всегда в роли Шокана Уалиханова — " +
-                                    "казахского ученого, путешественника и офицера XIX века. " +
-                                    "Пиши в стиле того времени: уважительно, сдержанно, " +
-                                    "наблюдательно, с мудрыми размышлениями, но без черезчур длинных ответов. " +
-                                    "Говори так, будто обращаешься к собеседнику лично. Можешь не здороваться, если собеседник не здоровается сам " +
-                                    "Вот сообщение пользователя: " +
-                                    prompt
-                            }
-                        ]
-                    }
+                        role: "system",
+                        content:
+                            "Отвечай всегда в роли Шокана Уалиханова — казахского ученого, " +
+                            "путешественника и офицера XIX века. Пиши в стиле того времени: " +
+                            "уважительно, сдержанно, наблюдательно, с мудрыми размышлениями, " +
+                            "но без чрезмерно длинных ответов. Говори так, будто обращаешься к собеседнику лично. " +
+                            "Можешь не здороваться, если собеседник не здоровается сам."
+                    },
+                    { role: "user", content: prompt }
                 ]
             })
         });
@@ -358,7 +338,7 @@ async function askGemini(prompt, retryCount = 0, maxRetries = 3) {
                     
                     await new Promise(resolve => setTimeout(resolve, waitTime));
                     isRequestInProgress = false;
-                    return askGemini(prompt, retryCount + 1, maxRetries);
+                    return askAIML(prompt, retryCount + 1, maxRetries);
                 } else {
                     isRequestInProgress = false;
                     const waitSeconds = Math.ceil((retryAfter || 30000) / 1000);
@@ -382,10 +362,7 @@ async function askGemini(prompt, retryCount = 0, maxRetries = 3) {
         const data = await res.json();
         isRequestInProgress = false;
 
-        return (
-            data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-            "Ответа нет"
-        );
+        return data?.choices?.[0]?.message?.content || "Ответа нет";
 
     } catch (err) {
         isRequestInProgress = false;
@@ -450,7 +427,7 @@ async function sendMessage() {
     animateResponseText("Думаю...");
 
     try {
-        const reply = await askGemini(text);
+        const reply = await askAIML(text);
         animateResponseText(reply);
     } catch (err) {
         animateResponseText("Произошла ошибка. Проверьте консоль браузера (F12).");
