@@ -266,7 +266,7 @@ async function askAIML(prompt, retryCount = 0, maxRetries = 3) {
 
     try {
         // API ключ закодирован в Base64 для базовой защиты
-        const encodedApiKey = "NTY4YzBmODY3N2JlNDA2ZDhkNTFjMTZjNzM2Zjg3YzA=";
+        const encodedApiKey = "NzhlNTcwOWEzNmJjNDEwMjg1M2MyNWU3YjYxMTYyZWE=";
         const apiKey = decodeBase64(encodedApiKey);
         const apiUrl = "https://api.aimlapi.com/v1/chat/completions";
         
@@ -445,4 +445,5 @@ userInput.addEventListener("keydown", e => {
 });
     </script>
 </body>
+
 </html>
